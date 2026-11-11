@@ -66,6 +66,21 @@ time limits but skip the Linux virtual-address-space cap, which can prevent
 CUDA initialization. Use the host's service manager for physical RAM limits
 if needed.
 
+### Prepare PaddleOCR-VL for CPU
+
+The upstream PaddleOCR-VL 1.6 vision projector contains BF16 tensors. On
+the tested Mac, image encoding on CPU took over six minutes with that file.
+Prepare a Q8 copy once per model store using the installed upstream
+projector. The service uses the smaller copy in CPU mode and the upstream projector
+in GPU mode. The preparation tool leaves the upstream file in place.
+
+```bash
+uv run --no-project --python 3.13 --with gguf==0.19.0 tools/prepare-paddle-projector.py
+```
+
+Copy the prepared projector with the other model files if moving them to a
+CPU-only server. The pipeline catalog reports when the CPU projector is missing.
+
 ### Ubuntu and Windows GPU testing
 
 On Ubuntu, use a compatible NVIDIA Linux driver and verify with `nvidia-smi`.
@@ -134,6 +149,34 @@ select the appropriate handwriting or printed-text pipeline.
 | `tesseract`, `anuvaad` | Image | CPU printed-text baselines |
 | `easyocr`, `ppocrv5` | Image | Devanagari CPU OCR candidates |
 | `chandra2`, `lightonocr`, `paddleocr_vl`, `glm_ocr` | Image | Local GGUF comparison candidates |
+
+## Install Tesseract language packs
+
+The multilingual vision models use their own weights across languages.
+EasyOCR and PP-OCRv5 use recognizer checkpoints selected for the script.
+Tesseract uses one `.traineddata` file per language or script.
+
+Install individual packs into the shared model store from the repository root.
+
+```bash
+.venv/bin/python tools/install-tessdata.py ben guj pan tel
+tesseract --list-langs --tessdata-dir "$HOME/.models/ocr/tesseract-ocr/tessdata"
+```
+
+This downloads Bengali, Gujarati, Punjabi, and Telugu from the official
+`tessdata_fast` release and preserves existing packs. Use the traineddata
+code in `languages`, for example `["ben", "eng"]`. Existing aliases such as
+`hi` and `en` still work. Use `GET /v1/pipelines` to confirm availability.
+The [official list](https://tesseract-ocr.github.io/tessdoc/Data-Files-in-different-versions)
+contains the pack codes.
+
+Docling's PDF OCR uses the system Tesseract data directory. On Ubuntu or
+WSL2, install packages such as `tesseract-ocr-ben` and `tesseract-ocr-tel`.
+On Homebrew, `brew install tesseract-lang` installs additional language data.
+Run `tesseract --list-langs` to see the system inventory. You can also use the
+installer's `--directory` option to write to an existing system tessdata
+directory if your account has write access. Restart the OCR service after
+changing the system inventory. See the [Tesseract installation guide](https://tesseract-ocr.github.io/tessdoc/Installation.html).
 
 ## Language hints
 
@@ -282,6 +325,32 @@ by the same raster dimensions, with the default retained for ordinary
 pages. If Docling needs a page-image fallback, it renders the page directly
 at up to 300 DPI within the same bounds. Individual engines can use smaller
 rasters.
+
+## Process a folder and save sidecars
+
+Create a dedicated client credential so the batch owns its queue jobs.
+
+```bash
+make ocr-client CLIENT=benchmark
+.venv/bin/python tools/ocr-batch.py /path/to/inputs --client benchmark \
+  --pipeline docling --pipeline paddleocr_vl --language-from-folder
+```
+
+The command walks subfolders and processes one file at a time. Repeat
+`--pipeline` or use `--all-pipelines` for every available engine. The batch
+skips file formats and language hints a pipeline does not support. Use
+`--languages hi en` to set explicit hints, or `--language-from-folder` for
+immediate parent folders such as `project/hindi/file.png`.
+
+The command writes a private JSON file next to each input, for example
+`page.png.paddleocr_vl.hi.json`. It saves the result or failure, the input
+hash, the device reported by the catalog, and wall-clock seconds from submit
+through polling. Terminal jobs are deleted from the service after the
+sidecar is written. A rerun skips a completed sidecar matching the input
+hash, pipeline, language and device. Use `--overwrite` to rerun completed
+sidecars. Copy a clean input pack to each workstation when measuring
+throughput, and use a dedicated benchmark queue to avoid pre-existing
+cached jobs and unrelated work.
 
 ## Result storage and cleanup
 

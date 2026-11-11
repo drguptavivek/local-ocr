@@ -186,6 +186,21 @@ def _system_tessdata(binary: str) -> set[str]:
         return set()
 
 
+def _trained_language(hint: str) -> str:
+    return _LANG[hint][0] if hint in _LANG else hint
+
+
+def _tesseract_language_hints(installed: set[str]) -> list[str]:
+    codes = {
+        code
+        for code in installed
+        if re.fullmatch(r"[a-z]{3}(?:_[a-z]+)*", code) and code != "osd"
+    }
+    return sorted(
+        codes | {alias for alias in _LANG if _trained_language(alias) in codes}
+    )
+
+
 def _indic_weights(directory: Path) -> bool:
     return (directory / "config.json").is_file() and any(
         _file(path) for path in directory.glob("model*.safetensors")
@@ -202,6 +217,13 @@ def execution_timeout_seconds(pipeline: str) -> int:
     if pipeline in _GGUF or pipeline in {"tesseract", "anuvaad"}:
         return SHORT_TIMEOUT_SECONDS
     return TIMEOUT_SECONDS
+
+
+def _gguf_projector(pipeline: str, device: str | None) -> Path:
+    projector = MODEL_ROOT / _GGUF[pipeline][1]
+    if pipeline == "paddleocr_vl" and device == "cpu":
+        return projector.with_name(f"{projector.stem}-q8_0.gguf")
+    return projector
 
 
 def pipeline_catalog() -> dict[str, dict[str, Any]]:
@@ -298,32 +320,32 @@ def pipeline_catalog() -> dict[str, dict[str, Any]]:
             "version": "3.7.0",
         },
     }
-    result["docling"]["recognition_languages"] = sorted(
-        code
-        for code, (trained, _) in _LANG.items()
-        if tess and trained in _system_tessdata(tess)
+    result["docling"]["recognition_languages"] = _tesseract_language_hints(
+        _system_tessdata(tess) if tess else set()
     )
-    result["tesseract"]["languages"] = sorted(
-        code
-        for code, (trained, _) in _LANG.items()
-        if (tessdata / f"{trained}.traineddata").is_file()
+    result["tesseract"]["languages"] = _tesseract_language_hints(
+        {path.stem for path in tessdata.glob("*.traineddata") if path.is_file()}
     )
     result["anuvaad"]["languages"] = ["hi", "hindi"]
     result["easyocr"]["languages"] = ["en", "english", "hi", "hindi"]
     result["ppocrv5"]["languages"] = ["en", "english", "hi", "hindi", "mr", "marathi"]
     llama = shutil.which("llama-mtmd-cli")
     llama_backend = llama_device(llama, mode)
-    for key, (model, mmproj, label) in _GGUF.items():
+    for key, (model, _, label) in _GGUF.items():
+        projector = _gguf_projector(key, llama_backend)
         result[key] = {
             "extensions": [".png", ".jpg", ".jpeg", ".tif", ".tiff"],
             "available": bool(
-                llama_backend
-                and _file(MODEL_ROOT / model)
-                and _file(MODEL_ROOT / mmproj)
+                llama_backend and _file(MODEL_ROOT / model) and _file(projector)
             ),
             "model": label,
             "version": "local GGUF",
         }
+        if key == "paddleocr_vl" and llama_backend == "cpu" and not _file(projector):
+            result[key]["unavailable_reason"] = (
+                "Prepare the PaddleOCR-VL Q8 CPU projector with "
+                "tools/prepare-paddle-projector.py (see the device guide)"
+            )
     devices = {
         "docling": torch_backend,
         "indicocr_block": torch_backend,
@@ -546,9 +568,12 @@ def _tesseract(path: Path, pipeline: str, language: str | list[str] | None) -> d
     assert binary
     tessdata = MODEL_ROOT / "tesseract-ocr" / "tessdata"
     hints = language if isinstance(language, list) else [language or "hi"]
-    if any(hint not in _LANG for hint in hints):
+    trained_models = list(dict.fromkeys(_trained_language(hint) for hint in hints))
+    if any(
+        not re.fullmatch(r"[a-z]{3}(?:_[a-z]+)*", model) or model == "osd"
+        for model in trained_models
+    ):
         raise ValueError("Unsupported language for this OCR pipeline")
-    trained_models = list(dict.fromkeys(_LANG[hint][0] for hint in hints))
     if pipeline == "anuvaad":
         if trained_models != ["hin"]:
             raise ValueError("Anuvaad supports Hindi")
@@ -583,7 +608,7 @@ def _docling(path: Path, language: str | list[str] | None = None) -> dict:
         output = Path(work) / "result.md"
         command = [sys.executable, str(script), str(path), "--output", str(output)]
         if isinstance(language, list):
-            trained_models = dict.fromkeys(_LANG[hint][0] for hint in language)
+            trained_models = dict.fromkeys(_trained_language(hint) for hint in language)
             for trained in trained_models:
                 command.extend(["--ocr-language", trained])
         completed = _run(
@@ -695,11 +720,12 @@ def _worker(path: Path, pipeline: str, language: str | list[str] | None) -> dict
 
 
 def _gguf(path: Path, pipeline: str, language: str | list[str] | None) -> dict:
-    model, mmproj, label = _GGUF[pipeline]
+    model, _, label = _GGUF[pipeline]
     binary = shutil.which("llama-mtmd-cli")
     device = llama_device(binary, device_mode())
     if not binary or device is None:
         raise RuntimeError("Configured llama.cpp device is unavailable")
+    projector = _gguf_projector(pipeline, device)
     prompts = {
         "chandra2": _CHANDRA_LAYOUT_PROMPT,
         "lightonocr": "grounding",
@@ -712,7 +738,7 @@ def _gguf(path: Path, pipeline: str, language: str | list[str] | None) -> dict:
             "-m",
             str(MODEL_ROOT / model),
             "--mmproj",
-            str(MODEL_ROOT / mmproj),
+            str(projector),
             "--image",
             str(path),
             "--jinja",
@@ -748,7 +774,7 @@ def _gguf(path: Path, pipeline: str, language: str | list[str] | None) -> dict:
         version=Path(model).name,
         language=language,
         fmt="html" if pipeline == "chandra2" else "text",
-        metadata={"device": device, "projector_file": Path(mmproj).name},
+        metadata={"device": device, "projector_file": projector.name},
     )
 
 

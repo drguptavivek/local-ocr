@@ -62,6 +62,34 @@ class OcrPipelineTests(unittest.TestCase):
         for pipeline in ("tesseract", "anuvaad", "easyocr", "ppocrv5"):
             self.assertEqual(catalog[pipeline]["device"], "cpu")
 
+    def test_paddle_cpu_uses_prepared_projector_and_reports_missing_file(self):
+        with (
+            patch.dict("os.environ", {"OCR_DEVICE": "cpu"}),
+            patch.object(ocr_pipelines.shutil, "which", return_value="/test/llama"),
+            patch.object(
+                ocr_pipelines,
+                "_file",
+                side_effect=lambda path: not path.name.endswith("-q8_0.gguf"),
+            ),
+        ):
+            paddle = ocr_pipelines.pipeline_catalog()["paddleocr_vl"]
+        self.assertFalse(paddle["available"])
+        self.assertIn("prepare-paddle-projector.py", paddle["unavailable_reason"])
+        cpu = ocr_pipelines._gguf_projector("paddleocr_vl", "cpu")
+        cuda = ocr_pipelines._gguf_projector("paddleocr_vl", "CUDA0")
+        self.assertEqual(cpu.name, f"{cuda.stem}-q8_0.gguf")
+
+    def test_tesseract_catalog_discovers_installed_codes_and_keeps_aliases(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            packs = root / "tesseract-ocr" / "tessdata"
+            packs.mkdir(parents=True)
+            for code in ("eng", "ben", "chi_sim", "osd"):
+                (packs / f"{code}.traineddata").touch()
+            with patch.object(ocr_pipelines, "MODEL_ROOT", root):
+                hints = ocr_pipelines.pipeline_catalog()["tesseract"]["languages"]
+            self.assertEqual(hints, ["ben", "chi_sim", "en", "eng", "english"])
+
     def test_process_timeout_surfaces_as_timeout_error(self):
         with self.assertRaises(TimeoutError):
             ocr_pipelines._run(

@@ -297,7 +297,9 @@ class OCRService:
                 raise HTTPException(
                     400, "OCR device or runtime unavailable for this pipeline"
                 )
-            raise HTTPException(400, "OCR pipeline unavailable")
+            raise HTTPException(
+                400, meta.get("unavailable_reason", "OCR pipeline unavailable")
+            )
         allowed = {str(x).lower() for x in meta.get("extensions", [])}
         if extension.lower() not in allowed:
             raise HTTPException(415, "File extension is not supported by this pipeline")
@@ -648,7 +650,7 @@ def create_app(
                 raise HTTPException(422, "Send between 1 and 8 language hints")
             hints = list(dict.fromkeys(value.strip().lower() for value in languages))
         values = hints if isinstance(hints, list) else [hints] if hints else []
-        if any(not re.fullmatch(r"[a-z][a-z-]{0,31}", value) for value in values):
+        if any(not re.fullmatch(r"[a-z][a-z_-]{0,31}", value) for value in values):
             raise HTTPException(422, "Use a language code or name")
         filename = Path(file.filename or "upload").name
         extension = Path(filename).suffix.lower()
