@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "local-ocr": {
+      "command": "/absolute/path/to/local-ocr/.venv/bin/python",
+      "args": ["/absolute/path/to/local-ocr/tools/ocr-mcp.py"]
+    }
+  }
+}

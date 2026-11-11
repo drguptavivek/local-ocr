@@ -1,0 +1,15 @@
+# Local OCR service
+
+> A shared localhost service for PDF and image OCR with a persistent queue, per-app credentials, and optional MCP access.
+
+Use `GET /health` for worker health, `GET /v1/pipelines` for engine
+capabilities, `POST /v1/jobs` to submit, and `GET /v1/jobs/{job_id}` to poll
+or retrieve the result. `GET /v1/workload` reports shared queue capacity and
+job and storage counts for the authenticated app. Use Docling for PDFs.
+
+## Documentation
+
+- [README](README.md): Installation, pipelines and MCP setup.
+- [Service and API guide](docs/shared-local-ocr.md): Authentication, examples, timeouts, limits and result retention.
+- [Local OCR skill](.agents/skills/local-ocr/SKILL.md): Agent workflow for jobs, polling and private results.
+- [MCP configuration](mcp.json): Local stdio adapter configuration.
